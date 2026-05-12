@@ -75,6 +75,12 @@ const readCachedProducts = () => {
   }
 };
 
+const getMenuFromHash = () => {
+  if (typeof window === 'undefined') return 'dashboard';
+  const menuId = window.location.hash.replace(/^#/, '').trim().toLowerCase();
+  return menuId || 'dashboard';
+};
+
 const LoginPage = memo(function LoginPage({ onLogin }) {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -168,7 +174,7 @@ const Sidebar = memo(function Sidebar({
   user,
 }) {
   return (
-    <aside className={`absolute md:relative z-50 w-64 h-full bg-indigo-950 text-white flex flex-col shadow-2xl transition-transform duration-500 ${isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}`}>
+    <aside className={`absolute inset-y-0 left-0 z-50 w-64 bg-indigo-950 text-white flex flex-col shadow-2xl transition-transform duration-500 md:relative md:inset-auto md:min-h-[100dvh] md:self-stretch ${isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}`}>
       <div className="p-6 border-b border-white/5 flex flex-col items-center">
         <h1 className="font-black text-xl italic tracking-tighter mt-4">TOKO BEBENG</h1>
       </div>
@@ -528,7 +534,7 @@ export default function App() {
       return null;
     }
   });
-  const [activeMenu, setActiveMenu] = useState('dashboard');
+  const [activeMenu, setActiveMenu] = useState(() => getMenuFromHash());
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [products, setProducts] = useState(() => readCachedProducts());
   const [productsLoading, setProductsLoading] = useState(false);
@@ -551,6 +557,11 @@ export default function App() {
   const accessibleMenus = useMemo(
     () => menuList.filter((menu) => hasAccess(user?.role, menu.roles)),
     [menuList, user?.role]
+  );
+
+  const accessibleMenuIds = useMemo(
+    () => new Set(accessibleMenus.map((menu) => menu.id)),
+    [accessibleMenus]
   );
 
   useEffect(() => {
@@ -633,12 +644,48 @@ export default function App() {
     }
   }, [accessibleMenus, activeMenu]);
 
+  useEffect(() => {
+    if (!user) return undefined;
+
+    const syncMenuFromBrowser = () => {
+      const nextMenu = getMenuFromHash();
+      if (accessibleMenuIds.has(nextMenu)) {
+        setActiveMenu(nextMenu);
+        setIsMobileMenuOpen(false);
+        if (nextMenu === 'inventory') fetchProducts();
+        return;
+      }
+
+      const fallbackMenu = accessibleMenus[0]?.id ?? 'dashboard';
+      if (window.location.hash !== `#${fallbackMenu}`) {
+        window.history.replaceState(null, '', `#${fallbackMenu}`);
+      }
+      setActiveMenu(fallbackMenu);
+      setIsMobileMenuOpen(false);
+    };
+
+    syncMenuFromBrowser();
+    window.addEventListener('hashchange', syncMenuFromBrowser);
+
+    return () => window.removeEventListener('hashchange', syncMenuFromBrowser);
+  }, [accessibleMenuIds, accessibleMenus, fetchProducts, user]);
+
+  useEffect(() => {
+    if (!user) return;
+    if (!accessibleMenuIds.has(activeMenu)) return;
+    if (window.location.hash === `#${activeMenu}`) return;
+    window.history.pushState(null, '', `#${activeMenu}`);
+  }, [accessibleMenuIds, activeMenu, user]);
+
   const handleLogout = () => {
     localStorage.removeItem(SESSION_STORAGE_KEY);
     setIsMobileMenuOpen(false);
     setActiveMenu('dashboard');
     setProducts([]);
     setProductsReady(false);
+    if (typeof window !== 'undefined') {
+      window.history.replaceState(null, '', window.location.pathname + window.location.search);
+    }
     setUser(null);
   };
 
@@ -655,7 +702,7 @@ export default function App() {
   if (!user) return <LoginPage onLogin={setUser} />;
 
   return (
-    <div className="flex h-[100dvh] overflow-hidden bg-slate-50 font-sans">
+    <div className="relative flex min-h-[100dvh] items-stretch bg-slate-50 font-sans">
       <Sidebar
         accessibleMenus={accessibleMenus}
         activeMenu={activeMenu}
@@ -665,14 +712,14 @@ export default function App() {
         user={user}
       />
 
-      <main className="flex-1 flex flex-col relative overflow-hidden">
+      <main className="relative flex min-h-[100dvh] min-w-0 flex-1 flex-col bg-slate-50">
         <AppHeader
           activeLabel={activeLabel}
           isMobileMenuOpen={isMobileMenuOpen}
           onToggleMenu={setIsMobileMenuOpen}
         />
 
-        <div className="flex-1 overflow-y-auto">
+        <div className="flex-1 min-h-0">
           {activeMenu === 'dashboard' && (
             <Dashboard
               products={products}
