@@ -1,7 +1,8 @@
-import React, { useState, useRef, useEffect, useLayoutEffect } from 'react';
+import React, { Suspense, lazy, useState, useRef, useEffect, useLayoutEffect } from 'react';
 import { flushSync } from 'react-dom';
 import { supabase } from '../config/supabase';
 import { addTransactionLog, getTransactionLogs } from '../utils/inventoryHistory';
+const MobileBarcodeScanner = lazy(() => import('../components/MobileBarcodeScanner'));
 
 const emptyQty = {
   slop: '',
@@ -10,6 +11,11 @@ const emptyQty = {
 };
 
 const formatNumber = (value) => new Intl.NumberFormat('id-ID').format(Number(value || 0));
+const scannerFallback = (
+  <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-xs font-black uppercase tracking-[0.16em] text-slate-400">
+    Menyiapkan kamera...
+  </div>
+);
 const formatDateTime = (value) =>
   new Intl.DateTimeFormat('id-ID', {
     dateStyle: 'medium',
@@ -250,62 +256,78 @@ export default function MutasiGudang({ user }) {
         <div className="space-y-6">
           <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-200">
           <h2 className="text-sm font-black uppercase tracking-widest text-indigo-600 mb-4">Pencarian Master Data</h2>
-          <div className="relative">
-            <input 
-              ref={inputRef}
-              type="text" 
-              placeholder="Tembak Barcode / Ketik Nama..." 
-              className="w-full p-4 bg-slate-100 rounded-xl font-black text-lg outline-none focus:ring-4 focus:ring-indigo-500/20 focus:bg-white border-2 border-transparent transition-all uppercase"
-              value={manualInput}
-              onChange={(e) => {
-                setManualInput(e.target.value);
-                setProduct(null);
-                setShowResults(true);
-              }}
-              onKeyDown={handleSearchKeyDown}
-            />
+          <div className="flex flex-col gap-3">
+            <div className="relative">
+              <input 
+                ref={inputRef}
+                type="text" 
+                placeholder="Tembak Barcode / Ketik Nama..." 
+                className="w-full p-4 bg-slate-100 rounded-xl font-black text-lg outline-none focus:ring-4 focus:ring-indigo-500/20 focus:bg-white border-2 border-transparent transition-all uppercase"
+                value={manualInput}
+                onChange={(e) => {
+                  setManualInput(e.target.value);
+                  setProduct(null);
+                  setShowResults(true);
+                }}
+                onKeyDown={handleSearchKeyDown}
+              />
 
-            {showResults && (searchResults.length > 0 || (manualInput.trim() && !loading)) && (
-              <div className="absolute z-20 mt-3 w-full bg-white rounded-2xl shadow-xl border border-slate-200 overflow-hidden">
-                {searchResults.length === 0 ? (
-                  <div className="p-4 text-sm font-bold text-slate-400">Barang tidak ditemukan.</div>
-                ) : (
-                  <div ref={resultListRef} className="max-h-80 overflow-y-auto">
-                    {searchResults.map((item, index) => (
-                      <button
-                        key={item.id}
-                        ref={(element) => {
-                          resultRefs.current[index] = element;
-                        }}
-                        type="button"
-                        onMouseMove={() => setHighlightedIndex(index)}
-                        onMouseDown={(event) => event.preventDefault()}
-                        onClick={() => selectProduct(item)}
-                        className={`w-full text-left p-4 border-b border-slate-100 last:border-b-0 flex justify-between items-center group ${
-                          highlightedIndex === index
-                            ? 'bg-indigo-50 border-indigo-100'
-                            : 'bg-white hover:bg-slate-50'
-                        }`}
-                      >
-                        <div>
-                          <p className={`font-black ${highlightedIndex === index ? 'text-indigo-800' : 'text-slate-800'}`}>
-                            {item.name}
-                          </p>
-                          <p className="text-[10px] text-slate-500 font-bold uppercase mt-1">SKU: {item.sku || '-'}</p>
-                        </div>
-                        <span className={`px-3 py-2 rounded-lg text-[10px] font-black uppercase tracking-wider ${
-                          highlightedIndex === index
-                            ? 'bg-indigo-600 text-white'
-                            : 'bg-indigo-100 text-indigo-700'
-                        }`}>
-                          Pilih
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
+              {showResults && (searchResults.length > 0 || (manualInput.trim() && !loading)) && (
+                <div className="absolute z-20 mt-3 w-full bg-white rounded-2xl shadow-xl border border-slate-200 overflow-hidden">
+                  {searchResults.length === 0 ? (
+                    <div className="p-4 text-sm font-bold text-slate-400">Barang tidak ditemukan.</div>
+                  ) : (
+                    <div ref={resultListRef} className="max-h-80 overflow-y-auto">
+                      {searchResults.map((item, index) => (
+                        <button
+                          key={item.id}
+                          ref={(element) => {
+                            resultRefs.current[index] = element;
+                          }}
+                          type="button"
+                          onMouseMove={() => setHighlightedIndex(index)}
+                          onMouseDown={(event) => event.preventDefault()}
+                          onClick={() => selectProduct(item)}
+                          className={`w-full text-left p-4 border-b border-slate-100 last:border-b-0 flex justify-between items-center group ${
+                            highlightedIndex === index
+                              ? 'bg-indigo-50 border-indigo-100'
+                              : 'bg-white hover:bg-slate-50'
+                          }`}
+                        >
+                          <div>
+                            <p className={`font-black ${highlightedIndex === index ? 'text-indigo-800' : 'text-slate-800'}`}>
+                              {item.name}
+                            </p>
+                            <p className="text-[10px] text-slate-500 font-bold uppercase mt-1">SKU: {item.sku || '-'}</p>
+                          </div>
+                          <span className={`px-3 py-2 rounded-lg text-[10px] font-black uppercase tracking-wider ${
+                            highlightedIndex === index
+                              ? 'bg-indigo-600 text-white'
+                              : 'bg-indigo-100 text-indigo-700'
+                          }`}>
+                            Pilih
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            <Suspense fallback={scannerFallback}>
+              <MobileBarcodeScanner
+                buttonLabel="Scan Barcode Kamera"
+                title="Pindai Barcode Gudang"
+                onDetected={(decodedText) => {
+                  setManualInput(decodedText);
+                  setProduct(null);
+                  setShowResults(true);
+                  setMessage({ type: 'success', text: `Barcode ${decodedText} berhasil dipindai.` });
+                }}
+              />
+            </Suspense>
+
           </div>
           <p className="mt-3 text-[11px] font-bold text-slate-400">
             Gunakan panah atas/bawah untuk memilih, lalu tekan Enter.

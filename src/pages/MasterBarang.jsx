@@ -1,4 +1,4 @@
-import React, { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
+import React, { Suspense, lazy, memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertCircle,
   ArrowDownUp,
@@ -18,6 +18,7 @@ import {
   X,
 } from 'lucide-react';
 import { supabase } from '../config/supabase';
+const MobileBarcodeScanner = lazy(() => import('../components/MobileBarcodeScanner'));
 
 const PRODUCT_FIELDS = [
   'sku',
@@ -47,6 +48,11 @@ const INITIAL_FORM = {
 };
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50];
+const scannerFallback = (
+  <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-xs font-black uppercase tracking-[0.16em] text-slate-400">
+    Menyiapkan kamera...
+  </div>
+);
 
 const formatNumber = (value) => new Intl.NumberFormat('id-ID').format(Number(value || 0));
 
@@ -248,6 +254,7 @@ const ProductForm = memo(function ProductForm({
   onSubmit,
   saving,
 }) {
+  const [activeCameraField, setActiveCameraField] = useState('barcode_slop');
   const [isBarcodePanelOpen, setIsBarcodePanelOpen] = useState(false);
   const kartonToBal = getKartonToBal(form);
   const fieldClass = (field) =>
@@ -301,16 +308,28 @@ const ProductForm = memo(function ProductForm({
           </button>
 
           {isBarcodePanelOpen && (
-            <div className="mt-3 grid grid-cols-1 gap-3">
+            <div className="mt-3 space-y-3">
+              <div className="grid grid-cols-1 gap-3">
               {[
                 { field: 'barcode_slop', label: 'Slop', placeholder: 'Scan barcode slop' },
                 { field: 'barcode_bal', label: 'Bal', placeholder: 'Scan barcode bal' },
                 { field: 'barcode_karton', label: 'Karton', placeholder: 'Scan barcode karton' },
               ].map((item, index) => (
                 <label key={item.field} className="block">
-                  <span className="mb-1.5 block text-[10px] font-black uppercase tracking-[0.16em] text-indigo-400">
-                    {item.label}
-                  </span>
+                  <div className="mb-1.5 flex items-center justify-between gap-3">
+                    <span className="block text-[10px] font-black uppercase tracking-[0.16em] text-indigo-400">
+                      {item.label}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setActiveCameraField(item.field)}
+                      className={`rounded-lg px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.12em] ${
+                        activeCameraField === item.field ? 'bg-indigo-600 text-white' : 'bg-white text-indigo-600'
+                      }`}
+                    >
+                      Target
+                    </button>
+                  </div>
                   <div className="relative">
                     <Barcode className="absolute left-3 top-3.5 text-indigo-400" size={18} />
                     <input
@@ -324,6 +343,17 @@ const ProductForm = memo(function ProductForm({
                   </div>
                 </label>
               ))}
+              </div>
+
+              <Suspense fallback={scannerFallback}>
+                <MobileBarcodeScanner
+                  buttonLabel="Mulai Kamera"
+                  title="Pindai Barcode Produk"
+                  onDetected={(decodedText) => {
+                    onChange(activeCameraField, decodedText);
+                  }}
+                />
+              </Suspense>
             </div>
           )}
           <div className="mt-3 grid grid-cols-3 gap-2 text-center text-[10px] font-black uppercase tracking-[0.12em] text-indigo-500">
