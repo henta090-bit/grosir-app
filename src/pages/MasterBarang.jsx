@@ -420,15 +420,17 @@ const ProductForm = memo(function ProductForm({
   );
 });
 
-const ProductRow = memo(function ProductRow({ item, onDelete, onEdit }) {
+const ProductRow = memo(function ProductRow({ isSelected, item, onDelete, onEdit }) {
   const status = getStockStatus(item);
   const conversion = getStockConversion(item);
   const stockIsLow = Number(item.current_stock_slop || 0) <= Number(item.min_stock_slop || 0);
+  const rowTone = isSelected ? 'bg-amber-50/80 ring-1 ring-inset ring-amber-200' : 'hover:bg-slate-50/80';
+  const stickyTone = isSelected ? 'bg-amber-50/80' : 'bg-white';
 
   return (
     <tr
       onClick={() => onEdit(item)}
-      className="cursor-pointer border-b border-slate-100 last:border-b-0 hover:bg-slate-50/80"
+      className={`cursor-pointer border-b border-slate-100 last:border-b-0 transition-colors ${rowTone}`}
       title="Klik untuk edit barang"
     >
       <td className="p-3 align-top md:p-4">
@@ -458,7 +460,7 @@ const ProductRow = memo(function ProductRow({ item, onDelete, onEdit }) {
           {status.label}
         </span>
       </td>
-      <td className="sticky right-0 z-10 bg-white p-3 text-right align-top shadow-[-10px_0_18px_-18px_rgba(15,23,42,0.7)] group-hover:bg-slate-50 md:p-4">
+      <td className={`sticky right-0 z-10 p-3 text-right align-top shadow-[-10px_0_18px_-18px_rgba(15,23,42,0.7)] md:p-4 ${stickyTone}`}>
         <div className="inline-flex items-center gap-1.5">
           <button
             type="button"
@@ -1011,7 +1013,13 @@ export default function MasterBarang({
                     </tr>
                   ) : (
                     paginatedItems.map((item) => (
-                      <ProductRow key={item.id} item={item} onDelete={handleDelete} onEdit={handleEdit} />
+                      <ProductRow
+                        key={item.id}
+                        isSelected={form.id === item.id}
+                        item={item}
+                        onDelete={handleDelete}
+                        onEdit={handleEdit}
+                      />
                     ))
                   )}
                 </tbody>
