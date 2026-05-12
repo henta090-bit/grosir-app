@@ -50,9 +50,13 @@ export default function MobileBarcodeScanner({
   const [statusText, setStatusText] = useState('Kamera siap dibuka saat Anda menekan tombol.');
 
   const scannerRef = useRef(null);
-  const probeStreamRef = useRef(null);
+  const hasDetectedRef = useRef(false);
   const isMountedRef = useRef(true);
-  const regionId = useId();
+  const generatedId = useId();
+  const regionId = useMemo(
+    () => `mobile-barcode-scanner-${generatedId.replace(/[^a-zA-Z0-9_-]/g, '')}`,
+    [generatedId]
+  );
 
   const buttonTone = useMemo(
     () =>
@@ -61,14 +65,32 @@ export default function MobileBarcodeScanner({
     [className]
   );
 
-  const stopProbeStream = () => {
-    probeStreamRef.current?.getTracks().forEach((track) => track.stop());
-    probeStreamRef.current = null;
+  const waitForScannerRegion = () => new Promise((resolve, reject) => {
+    window.requestAnimationFrame(() => {
+      const element = document.getElementById(regionId);
+
+      if (element) {
+        resolve(element);
+        return;
+      }
+
+      reject(new Error('Area kamera belum siap. Coba tekan scan sekali lagi.'));
+    });
+  });
+
+  const prepareVideoElement = () => {
+    const video = document.getElementById(regionId)?.querySelector('video');
+
+    if (!video) return;
+
+    video.setAttribute('playsinline', 'true');
+    video.setAttribute('webkit-playsinline', 'true');
+    video.muted = true;
+    video.play?.().catch(() => {});
   };
 
   const stopScanner = async () => {
     const scanner = scannerRef.current;
-    stopProbeStream();
 
     if (!scanner) {
       if (isMountedRef.current) {
@@ -119,13 +141,10 @@ export default function MobileBarcodeScanner({
     setStatusText('Meminta izin kamera...');
     setIsScannerOpen(true);
     setIsStarting(true);
+    hasDetectedRef.current = false;
 
     try {
-      probeStreamRef.current = await navigator.mediaDevices.getUserMedia({
-        video: CAMERA_CONSTRAINTS,
-        audio: false,
-      });
-      stopProbeStream();
+      await waitForScannerRegion();
 
       const scanner = new Html5Qrcode(regionId, {
         formatsToSupport: SUPPORTED_FORMATS,
@@ -138,7 +157,6 @@ export default function MobileBarcodeScanner({
         CAMERA_CONSTRAINTS,
         {
           fps: 12,
-          aspectRatio: 1.777778,
           disableFlip: false,
           qrbox: (viewfinderWidth, viewfinderHeight) => ({
             width: Math.floor(Math.min(viewfinderWidth * 0.82, 340)),
@@ -146,7 +164,9 @@ export default function MobileBarcodeScanner({
           }),
         },
         async (decodedText) => {
-          if (!decodedText) return;
+          if (!decodedText || hasDetectedRef.current) return;
+
+          hasDetectedRef.current = true;
           setStatusText(`Barcode terbaca: ${decodedText}`);
           await stopScanner();
           setIsScannerOpen(false);
@@ -156,6 +176,7 @@ export default function MobileBarcodeScanner({
       );
 
       if (isMountedRef.current) {
+        prepareVideoElement();
         setIsScanning(true);
         setIsStarting(false);
         setStatusText('Arahkan barcode ke bingkai kamera.');
