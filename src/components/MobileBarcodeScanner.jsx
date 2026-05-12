@@ -16,7 +16,7 @@ const SUPPORTED_FORMATS = [
 ];
 
 const CAMERA_CONSTRAINTS = {
-  facingMode: { ideal: 'environment' },
+  facingMode: 'environment',
 };
 
 const mapCameraError = (error) => {
