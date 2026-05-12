@@ -53,6 +53,7 @@ const scannerFallback = (
     Menyiapkan kamera...
   </div>
 );
+const SKU_PREFIX = 'BRG';
 
 const formatNumber = (value) => new Intl.NumberFormat('id-ID').format(Number(value || 0));
 
@@ -61,6 +62,16 @@ const normalizeText = (value) => String(value ?? '').trim().toLowerCase();
 const parseNumber = (value) => {
   const parsed = Number.parseInt(value, 10);
   return Number.isNaN(parsed) ? 0 : parsed;
+};
+
+const buildNextSku = (products) => {
+  const maxSkuNumber = products.reduce((max, item) => {
+    const match = String(item?.sku || '').toUpperCase().match(/^BRG-(\d+)$/);
+    if (!match) return max;
+    return Math.max(max, Number.parseInt(match[1], 10) || 0);
+  }, 0);
+
+  return `${SKU_PREFIX}-${String(maxSkuNumber + 1).padStart(4, '0')}`;
 };
 
 const escapeCsvValue = (value) => {
@@ -165,8 +176,8 @@ const getKartonToBal = (form) => {
   return slopPerKarton / slopPerBal;
 };
 
-const buildProductPayload = (form) => ({
-  sku: form.sku.trim(),
+const buildProductPayload = (form, products) => ({
+  sku: form.id ? form.sku.trim() : buildNextSku(products),
   name: form.name.trim(),
   barcode_slop: form.barcode_slop.trim() || null,
   barcode_bal: form.barcode_bal.trim() || null,
@@ -180,10 +191,9 @@ const buildProductPayload = (form) => ({
 
 const validateProductForm = (form, products) => {
   const errors = {};
-  const sku = form.sku.trim();
+  const sku = form.id ? form.sku.trim() : buildNextSku(products);
   const name = form.name.trim();
 
-  if (!sku) errors.sku = 'SKU wajib diisi.';
   if (!name) errors.name = 'Nama barang wajib diisi.';
 
   ['current_stock_slop', 'min_stock_slop', 'isi_slop_per_bal', 'isi_slop_per_karton'].forEach((field) => {
@@ -244,6 +254,7 @@ const Notification = memo(function Notification({ message, onClose }) {
 });
 
 const ProductForm = memo(function ProductForm({
+  generatedSku,
   barcodeInputRef,
   errors,
   form,
@@ -366,7 +377,15 @@ const ProductForm = memo(function ProductForm({
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <label>
             <span className="block text-[10px] font-black uppercase tracking-[0.16em] text-slate-400 mb-2">SKU</span>
-            <input value={form.sku} onChange={(event) => onChange('sku', event.target.value)} className={fieldClass('sku')} placeholder="Contoh: SKM-001" />
+            <input
+              value={generatedSku}
+              readOnly
+              className="w-full rounded-xl border border-slate-200 bg-slate-100 px-3 py-3 text-sm font-black text-slate-700 outline-none"
+              placeholder="SKU dibuat otomatis"
+            />
+            <p className="mt-1 text-xs font-bold text-slate-400">
+              {isEditing ? 'SKU existing dipertahankan oleh sistem.' : 'SKU baru dibuat otomatis saat produk ditambahkan.'}
+            </p>
             {errors.sku && <p className="mt-1 text-xs font-bold text-rose-600">{errors.sku}</p>}
           </label>
 
@@ -552,6 +571,10 @@ export default function MasterBarang({
   const deferredSearchTerm = useDeferredValue(searchTerm);
   const items = products;
   const loading = productsLoading;
+  const generatedSku = useMemo(
+    () => (form.id ? form.sku || '-' : buildNextSku(items)),
+    [form.id, form.sku, items]
+  );
 
   useEffect(() => {
     setPage(1);
@@ -646,7 +669,7 @@ export default function MasterBarang({
       setSaving(true);
       setMessage({ type: '', text: '' });
 
-      const payload = buildProductPayload(form);
+      const payload = buildProductPayload(form, items);
       const request = form.id
         ? supabase.from('products').update(payload).eq('id', form.id)
         : supabase.from('products').insert(payload).select(`id,${PRODUCT_FIELDS.join(',')}`).single();
@@ -703,15 +726,20 @@ export default function MasterBarang({
       const rows = parseCsvProducts(text).map(normalizeImportedProduct);
       const existingSkus = new Set(items.map((item) => normalizeText(item.sku)));
       const seenSkus = new Set();
+      let nextSkuNumber = items.reduce((max, item) => {
+        const match = String(item?.sku || '').toUpperCase().match(/^BRG-(\d+)$/);
+        if (!match) return max;
+        return Math.max(max, Number.parseInt(match[1], 10) || 0);
+      }, 0);
 
       const preview = rows.map((row, index) => {
-        const skuKey = normalizeText(row.sku);
+        const resolvedSku = row.sku || `${SKU_PREFIX}-${String(nextSkuNumber + 1).padStart(4, '0')}`;
+        if (!row.sku) nextSkuNumber += 1;
+        const skuKey = normalizeText(resolvedSku);
         const duplicateInFile = seenSkus.has(skuKey);
         if (skuKey) seenSkus.add(skuKey);
 
-        const reason = !row.sku
-          ? 'SKU kosong'
-          : !row.name
+        const reason = !row.name
             ? 'Nama kosong'
             : existingSkus.has(skuKey)
               ? 'SKU sudah ada'
@@ -720,10 +748,13 @@ export default function MasterBarang({
                 : '';
 
         return {
-          id: `${row.sku || 'row'}-${index}`,
+          id: `${resolvedSku || 'row'}-${index}`,
           checked: !reason,
           reason,
-          row,
+          row: {
+            ...row,
+            sku: resolvedSku,
+          },
         };
       });
 
@@ -1087,6 +1118,7 @@ export default function MasterBarang({
           </section>
 
           <ProductForm
+            generatedSku={generatedSku}
             barcodeInputRef={barcodeInputRef}
             errors={errors}
             form={form}
