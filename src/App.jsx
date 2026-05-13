@@ -163,33 +163,35 @@ const Sidebar = memo(function Sidebar({
 }) {
   return (
     <aside className={`absolute inset-y-0 left-0 z-50 w-64 bg-indigo-950 text-white flex flex-col shadow-2xl transition-transform duration-500 md:relative md:inset-auto md:min-h-[100dvh] md:self-stretch ${isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}`}>
-      <div className="p-6 border-b border-white/5 flex flex-col items-center">
-        <h1 className="font-black text-xl italic tracking-tighter mt-4">TOKO BEBENG</h1>
-      </div>
-
-      <nav className="flex-1 py-6 px-4 space-y-2">
-        {accessibleMenus.map((m) => {
-          const Icon = m.icon;
-          return (
-            <button
-              key={m.id}
-              onClick={() => onMenuClick(m.id)}
-              className={`w-full flex items-center gap-4 p-3.5 rounded-xl font-bold text-xs tracking-wide transition-all ${activeMenu === m.id ? 'bg-white text-indigo-950 shadow-md' : 'text-indigo-100/60 hover:text-white hover:bg-white/5'}`}
-            >
-              <Icon size={18} className={activeMenu === m.id ? 'text-indigo-600' : ''} /> {m.label}
-            </button>
-          );
-        })}
-      </nav>
-
-      <div className="p-4 border-t border-white/5 bg-indigo-900/30 flex justify-between items-center">
-        <div>
-          <p className="text-[11px] font-black text-white">{user.username.toUpperCase()}</p>
-          <p className="text-[9px] font-bold text-indigo-300 uppercase">{normalizeRole(user.role)}</p>
+      <div className="flex h-full flex-col md:sticky md:top-0 md:h-screen">
+        <div className="p-6 border-b border-white/5 flex flex-col items-center">
+          <h1 className="font-black text-xl italic tracking-tighter mt-4">TOKO BEBENG</h1>
         </div>
-        <button onClick={onLogout} className="text-white/40 hover:text-rose-400 p-2">
-          <LogOut size={16} />
-        </button>
+
+        <nav className="flex-1 py-6 px-4 space-y-2">
+          {accessibleMenus.map((m) => {
+            const Icon = m.icon;
+            return (
+              <button
+                key={m.id}
+                onClick={() => onMenuClick(m.id)}
+                className={`w-full flex items-center gap-4 p-3.5 rounded-xl font-bold text-xs tracking-wide transition-all ${activeMenu === m.id ? 'bg-white text-indigo-950 shadow-md' : 'text-indigo-100/60 hover:text-white hover:bg-white/5'}`}
+              >
+                <Icon size={18} className={activeMenu === m.id ? 'text-indigo-600' : ''} /> {m.label}
+              </button>
+            );
+          })}
+        </nav>
+
+        <div className="mt-auto p-4 border-t border-white/5 bg-indigo-900/30 backdrop-blur-sm flex justify-between items-center md:sticky md:bottom-0">
+          <div>
+            <p className="text-[11px] font-black text-white">{user.username.toUpperCase()}</p>
+            <p className="text-[9px] font-bold text-indigo-300 uppercase">{normalizeRole(user.role)}</p>
+          </div>
+          <button onClick={onLogout} className="text-white/40 hover:text-rose-400 p-2">
+            <LogOut size={16} />
+          </button>
+        </div>
       </div>
     </aside>
   );
