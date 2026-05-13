@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, CheckCircle2, ClipboardList, RefreshCcw, Search } from 'lucide-react';
 import { supabase } from '../config/supabase';
 import { addOpnameLog, addTransactionLog, getOpnameLogs } from '../utils/inventoryHistory';
@@ -63,6 +63,48 @@ const getQtyTotalSlop = (product, qtyValue) => {
   );
 };
 
+const getProductCategoryLabel = (item) => {
+  const fallbackCategory = getCategoryFromSku(item.sku);
+  return `${item.category_code || fallbackCategory.code} - ${item.category_name || fallbackCategory.name}`;
+};
+
+const ProductListItem = memo(function ProductListItem({
+  checked,
+  isGudang,
+  isSelected,
+  item,
+  onSelect,
+}) {
+  return (
+    <button
+      onClick={() => onSelect(item)}
+      className={`w-full px-4 py-3 text-left transition-colors ${
+        isSelected ? 'bg-indigo-50' : 'hover:bg-slate-50'
+      }`}
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="truncate font-black text-slate-800">{item.name}</p>
+          <p className="mt-1 truncate text-[11px] font-bold uppercase text-slate-400">{item.sku || '-'}</p>
+          <p className="mt-1 truncate text-[11px] font-black text-indigo-500">{getProductCategoryLabel(item)}</p>
+        </div>
+        <span
+          className={`shrink-0 rounded-md px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.08em] ${
+            checked ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-200 text-slate-600'
+          }`}
+        >
+          {checked ? 'Sudah' : 'Belum'}
+        </span>
+      </div>
+      {!isGudang && (
+        <p className="mt-2 text-xs font-bold text-indigo-600">
+          Stok sistem: {formatNumber(item.current_stock_slop)} slop
+        </p>
+      )}
+    </button>
+  );
+});
+
 export default function StokOpname({
   products,
   productsLoading,
@@ -71,6 +113,7 @@ export default function StokOpname({
   user,
 }) {
   const [searchTerm, setSearchTerm] = useState('');
+  const deferredSearchTerm = useDeferredValue(searchTerm);
   const [categoryFilter, setCategoryFilter] = useState('ALL');
   const [selectedProduct, setSelectedProduct] = useState(null);
   const [physicalQty, setPhysicalQty] = useState(emptyQty);
@@ -87,7 +130,7 @@ export default function StokOpname({
   const isGudang = role === 'GUDANG';
   const todayKey = getTodayKey();
 
-  const loadTodayLogs = async () => {
+  const loadTodayLogs = useCallback(async () => {
     setOpnameLoading(true);
 
     try {
@@ -104,16 +147,16 @@ export default function StokOpname({
     } finally {
       setOpnameLoading(false);
     }
-  };
+  }, [todayKey]);
 
-  const reloadView = async () => {
+  const reloadView = useCallback(async () => {
     setMessage({ type: '', text: '' });
     await Promise.all([refreshProducts?.(), loadTodayLogs()]);
-  };
+  }, [loadTodayLogs, refreshProducts]);
 
   useEffect(() => {
     loadTodayLogs();
-  }, []);
+  }, [loadTodayLogs]);
 
   useEffect(() => {
     if (selectedProduct) {
@@ -140,7 +183,7 @@ export default function StokOpname({
   );
 
   const filteredProducts = useMemo(() => {
-    const keyword = searchTerm.trim().toLowerCase();
+    const keyword = deferredSearchTerm.trim().toLowerCase();
     const source = keyword
       ? activeProducts.filter(
           (item) =>
@@ -152,7 +195,7 @@ export default function StokOpname({
       : activeProducts;
 
     return source.slice(0, 60);
-  }, [activeProducts, searchTerm]);
+  }, [activeProducts, deferredSearchTerm]);
 
   const summary = useMemo(() => {
     const checkedCount = todayLogs.length;
@@ -174,7 +217,7 @@ export default function StokOpname({
     };
   }, [activeProducts.length, todayLogs]);
 
-  const selectProduct = (item) => {
+  const selectProduct = useCallback((item) => {
     setSelectedProduct(item);
     setPhysicalQty(
       isGudang
@@ -187,7 +230,7 @@ export default function StokOpname({
     );
     setNote('');
     setMessage({ type: '', text: '' });
-  };
+  }, [isGudang]);
 
   const handleQtyFocus = (event) => {
     event.target.select();
@@ -325,7 +368,8 @@ export default function StokOpname({
   const selectedDifference = selectedProduct
     ? physicalTotalSlop - Number(selectedProduct.current_stock_slop || 0)
     : 0;
-  const isLoading = productsLoading || opnameLoading;
+  const isProductsLoading = productsLoading && (products || []).length === 0;
+  const isRefreshing = productsLoading || opnameLoading;
 
   return (
     <div className="min-h-full bg-slate-50 p-3 sm:p-4 lg:p-6">
@@ -339,10 +383,10 @@ export default function StokOpname({
 
             <button
               onClick={reloadView}
-              disabled={isLoading}
+              disabled={isRefreshing}
               className="inline-flex items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white px-4 py-3 text-xs font-black uppercase tracking-[0.12em] text-slate-700 hover:bg-slate-50 disabled:opacity-60"
             >
-              <RefreshCcw size={16} className={isLoading ? 'animate-spin' : ''} />
+              <RefreshCcw size={16} className={isRefreshing ? 'animate-spin' : ''} />
               Muat Ulang
             </button>
           </div>
@@ -415,46 +459,21 @@ export default function StokOpname({
             </div>
 
             <div className="max-h-[56vh] overflow-y-auto divide-y divide-slate-100 xl:max-h-[calc(100vh-20rem)]">
-              {isLoading ? (
+              {isProductsLoading ? (
                 <div className="p-6 text-sm font-bold text-slate-400">Memuat data opname...</div>
               ) : filteredProducts.length === 0 ? (
                 <div className="p-6 text-sm font-bold text-slate-400">Barang tidak ditemukan.</div>
               ) : (
-                filteredProducts.map((item) => {
-                  const checked = todayLogMap.has(item.id);
-
-                  return (
-                    <button
-                      key={item.id}
-                      onClick={() => selectProduct(item)}
-                      className={`w-full px-4 py-3 text-left transition-colors ${
-                        selectedProduct?.id === item.id ? 'bg-indigo-50' : 'hover:bg-slate-50'
-                      }`}
-                    >
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="min-w-0">
-                          <p className="truncate font-black text-slate-800">{item.name}</p>
-                          <p className="mt-1 truncate text-[11px] font-bold uppercase text-slate-400">{item.sku || '-'}</p>
-                          <p className="mt-1 truncate text-[11px] font-black text-indigo-500">
-                            {(item.category_code || getCategoryFromSku(item.sku).code)} - {item.category_name || getCategoryFromSku(item.sku).name}
-                          </p>
-                        </div>
-                        <span
-                          className={`shrink-0 rounded-md px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.08em] ${
-                            checked ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-200 text-slate-600'
-                          }`}
-                        >
-                          {checked ? 'Sudah' : 'Belum'}
-                        </span>
-                      </div>
-                      {!isGudang && (
-                        <p className="mt-2 text-xs font-bold text-indigo-600">
-                          Stok sistem: {formatNumber(item.current_stock_slop)} slop
-                        </p>
-                      )}
-                    </button>
-                  );
-                })
+                filteredProducts.map((item) => (
+                  <ProductListItem
+                    key={item.id}
+                    checked={todayLogMap.has(item.id)}
+                    isGudang={isGudang}
+                    isSelected={selectedProduct?.id === item.id}
+                    item={item}
+                    onSelect={selectProduct}
+                  />
+                ))
               )}
             </div>
           </div>
@@ -468,7 +487,7 @@ export default function StokOpname({
                     <h4 className="mt-1 break-words text-xl font-black text-slate-900 sm:text-2xl">{selectedProduct.name}</h4>
                     <p className="mt-1 text-xs font-bold uppercase text-indigo-500">{selectedProduct.sku || '-'}</p>
                     <p className="mt-1 text-xs font-black text-indigo-500">
-                      {(selectedProduct.category_code || getCategoryFromSku(selectedProduct.sku).code)} - {selectedProduct.category_name || getCategoryFromSku(selectedProduct.sku).name}
+                      {getProductCategoryLabel(selectedProduct)}
                     </p>
                   </div>
                   <span

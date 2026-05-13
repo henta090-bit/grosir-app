@@ -637,7 +637,7 @@ export default function App() {
       if (accessibleMenuIds.has(nextMenu)) {
         setActiveMenu(nextMenu);
         setIsMobileMenuOpen(false);
-        if (nextMenu === 'inventory') fetchProducts();
+        if (nextMenu === 'inventory' || nextMenu === 'opname') fetchProducts();
         return;
       }
 
@@ -677,7 +677,7 @@ export default function App() {
   const handleMenuClick = useCallback((menuId) => {
     setActiveMenu(menuId);
     setIsMobileMenuOpen(false);
-    if (menuId === 'inventory') fetchProducts();
+    if (menuId === 'inventory' || menuId === 'opname') fetchProducts();
   }, [fetchProducts]);
 
   const refreshProducts = useCallback(() => fetchProducts({ force: true }), [fetchProducts]);
