@@ -18,10 +18,21 @@ import {
   X,
 } from 'lucide-react';
 import { supabase } from '../config/supabase';
+import {
+  PRODUCT_CATEGORIES,
+  buildCategoryOptions,
+  buildSkuPreview,
+  getCategoryFromSku,
+  getCategoryName,
+  normalizeCategoryCode,
+} from '../utils/productCategories';
+import { createProductWithNextSku, importProductRowsBySku, updateProductRow } from '../utils/productQueries';
 const MobileBarcodeScanner = lazy(() => import('../components/MobileBarcodeScanner'));
 
 const PRODUCT_FIELDS = [
   'sku',
+  'category_code',
+  'category_name',
   'name',
   'barcode_slop',
   'barcode_bal',
@@ -36,6 +47,8 @@ const PRODUCT_FIELDS = [
 const INITIAL_FORM = {
   id: null,
   sku: '',
+  category_code: '01',
+  category_name: 'Rokok',
   name: '',
   barcode_slop: '',
   barcode_bal: '',
@@ -53,26 +66,24 @@ const scannerFallback = (
     Menyiapkan kamera...
   </div>
 );
-const SKU_PREFIX = 'BRG';
-
 const formatNumber = (value) => new Intl.NumberFormat('id-ID').format(Number(value || 0));
 
 const normalizeText = (value) => String(value ?? '').trim().toLowerCase();
+const normalizeSku = (value) => String(value ?? '').trim();
+const isSameProductId = (left, right) => String(left ?? '') === String(right ?? '');
 
 const parseNumber = (value) => {
   const parsed = Number.parseInt(value, 10);
   return Number.isNaN(parsed) ? 0 : parsed;
 };
 
-const buildNextSku = (products) => {
-  const maxSkuNumber = products.reduce((max, item) => {
-    const match = String(item?.sku || '').toUpperCase().match(/^BRG-(\d+)$/);
-    if (!match) return max;
-    return Math.max(max, Number.parseInt(match[1], 10) || 0);
-  }, 0);
-
-  return `${SKU_PREFIX}-${String(maxSkuNumber + 1).padStart(4, '0')}`;
+const parseNumberWithDefault = (value, fallback) => {
+  if (value === undefined || value === null || String(value).trim() === '') return fallback;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isNaN(parsed) ? fallback : parsed;
 };
+
+const CATEGORY_OPTIONS = buildCategoryOptions();
 
 const escapeCsvValue = (value) => {
   const text = String(value ?? '');
@@ -121,7 +132,7 @@ const parseCsvProducts = (text) => {
 
   if (lines.length < 2) return [];
 
-  const headers = parseCsvLine(lines[0]).map((header) => header.trim());
+  const headers = parseCsvLine(lines[0]).map((header) => header.trim().toLowerCase());
 
   return lines.slice(1).map((line) => {
     const values = parseCsvLine(line);
@@ -132,18 +143,66 @@ const parseCsvProducts = (text) => {
   });
 };
 
-const normalizeImportedProduct = (row) => ({
-  sku: String(row.sku ?? '').trim(),
-  name: String(row.name ?? '').trim(),
-  barcode_slop: String(row.barcode_slop ?? '').trim() || null,
-  barcode_bal: String(row.barcode_bal ?? '').trim() || null,
-  barcode_karton: String(row.barcode_karton ?? '').trim() || null,
-  current_stock_slop: parseNumber(row.current_stock_slop),
-  min_stock_slop: parseNumber(row.min_stock_slop),
-  isi_slop_per_bal: Math.max(parseNumber(row.isi_slop_per_bal || 10), 1),
-  isi_slop_per_karton: parseNumber(row.isi_slop_per_karton),
-  is_active: String(row.is_active ?? 'true').toLowerCase() !== 'false',
-});
+const getImportValue = (row, aliases, fallback = '') => {
+  for (const alias of aliases) {
+    if (row[alias] !== undefined) return row[alias];
+  }
+
+  return fallback;
+};
+
+const expandScientificNotation = (value) => {
+  const rawValue = String(value ?? '').trim();
+  const match = rawValue.match(/^([+-]?)(\d+)(?:\.(\d+))?[eE]([+-]?\d+)$/);
+  if (!match) return rawValue;
+
+  const [, sign, integerPart, decimalPart = '', exponentText] = match;
+  const exponent = Number.parseInt(exponentText, 10);
+  const digits = `${integerPart}${decimalPart}`;
+
+  if (exponent >= decimalPart.length) {
+    return `${sign}${digits}${'0'.repeat(exponent - decimalPart.length)}`;
+  }
+
+  const decimalIndex = integerPart.length + exponent;
+  if (decimalIndex <= 0) {
+    return `${sign}0.${'0'.repeat(Math.abs(decimalIndex))}${digits}`.replace(/\.?0+$/, '');
+  }
+
+  return `${sign}${digits.slice(0, decimalIndex)}.${digits.slice(decimalIndex)}`.replace(/\.?0+$/, '');
+};
+
+const normalizeImportedBarcode = (value) => {
+  const normalized = expandScientificNotation(value).trim();
+  return normalized || null;
+};
+
+const normalizeImportedProduct = (row) => {
+  const sku = String(getImportValue(row, ['sku']) ?? '').trim();
+  const detectedCategory = getCategoryFromSku(sku);
+  const categoryCode = normalizeCategoryCode(detectedCategory.code);
+  const stockValue = getImportValue(row, ['current_stock_slop', 'current_stock', 'stock', 'stok']);
+  const minStockValue = getImportValue(row, ['min_stock_slop', 'min_stock', 'stok_minimum', 'minimum_stock']);
+  const slopPerBalValue = getImportValue(row, ['isi_slop_per_bal', 'isi_slop', 'slop_per_bal']);
+  const slopPerKartonValue = getImportValue(row, ['isi_slop_per_karton', 'isi_bal', 'slop_per_karton']);
+  const isActiveValue = getImportValue(row, ['is_active', 'status'], 'true');
+  const barcode = normalizeImportedBarcode(getImportValue(row, ['barcode']));
+
+  return {
+    sku,
+    category_code: categoryCode,
+    category_name: getCategoryName(categoryCode),
+    name: String(getImportValue(row, ['name', 'nama', 'nama_barang']) ?? '').trim(),
+    barcode_slop: normalizeImportedBarcode(getImportValue(row, ['barcode_slop'], barcode)),
+    barcode_bal: normalizeImportedBarcode(getImportValue(row, ['barcode_bal'])),
+    barcode_karton: normalizeImportedBarcode(getImportValue(row, ['barcode_karton'])),
+    current_stock_slop: Math.max(parseNumberWithDefault(stockValue, 0), 0),
+    min_stock_slop: Math.max(parseNumberWithDefault(minStockValue, 10), 0),
+    isi_slop_per_bal: Math.max(parseNumberWithDefault(slopPerBalValue, 10), 1),
+    isi_slop_per_karton: Math.max(parseNumberWithDefault(slopPerKartonValue, 0), 0),
+    is_active: !['false', 'nonaktif', 'non-aktif', 'inactive', '0'].includes(String(isActiveValue).trim().toLowerCase()),
+  };
+};
 
 const getStockStatus = (item) => {
   const stock = Number(item.current_stock_slop || 0);
@@ -176,24 +235,35 @@ const getKartonToBal = (form) => {
   return slopPerKarton / slopPerBal;
 };
 
-const buildProductPayload = (form, products) => ({
-  sku: form.id ? form.sku.trim() : buildNextSku(products),
-  name: form.name.trim(),
-  barcode_slop: form.barcode_slop.trim() || null,
-  barcode_bal: form.barcode_bal.trim() || null,
-  barcode_karton: form.barcode_karton.trim() || null,
-  current_stock_slop: parseNumber(form.current_stock_slop),
-  min_stock_slop: parseNumber(form.min_stock_slop),
-  isi_slop_per_bal: Math.max(parseNumber(form.isi_slop_per_bal), 1),
-  isi_slop_per_karton: parseNumber(form.isi_slop_per_karton),
-  is_active: Boolean(form.is_active),
-});
+const buildProductPayload = (form) => {
+  const sku = normalizeSku(form.sku);
+  const category = sku ? getCategoryFromSku(sku) : { code: normalizeCategoryCode(form.category_code) };
+  const categoryCode = form.id ? category.code : normalizeCategoryCode(form.category_code);
+
+  return {
+    ...(form.id ? { sku } : {}),
+    category_code: categoryCode,
+    category_name: getCategoryName(categoryCode),
+    name: form.name.trim(),
+    barcode_slop: form.barcode_slop.trim() || null,
+    barcode_bal: form.barcode_bal.trim() || null,
+    barcode_karton: form.barcode_karton.trim() || null,
+    current_stock_slop: parseNumber(form.current_stock_slop),
+    min_stock_slop: parseNumber(form.min_stock_slop),
+    isi_slop_per_bal: Math.max(parseNumber(form.isi_slop_per_bal), 1),
+    isi_slop_per_karton: parseNumber(form.isi_slop_per_karton),
+    is_active: Boolean(form.is_active),
+  };
+};
 
 const validateProductForm = (form, products) => {
   const errors = {};
-  const sku = form.id ? form.sku.trim() : buildNextSku(products);
+  const currentProductId = form.id;
+  const manualSku = normalizeSku(form.sku);
+  const sku = manualSku || buildSkuPreview(products, form.category_code, currentProductId);
   const name = form.name.trim();
 
+  if (manualSku && !/^\d{5}$/.test(manualSku)) errors.sku = 'SKU harus 5 digit angka, contoh 01003.';
   if (!name) errors.name = 'Nama barang wajib diisi.';
 
   ['current_stock_slop', 'min_stock_slop', 'isi_slop_per_bal', 'isi_slop_per_karton'].forEach((field) => {
@@ -207,7 +277,10 @@ const validateProductForm = (form, products) => {
   }
 
   const skuExists = products.some(
-    (item) => item.id !== form.id && normalizeText(item.sku) === normalizeText(sku)
+    (item) =>
+      !isSameProductId(item.id, currentProductId) &&
+      item.is_active !== false &&
+      normalizeSku(item.sku) === sku
   );
 
   if (skuExists) errors.sku = 'SKU sudah terdaftar.';
@@ -378,15 +451,36 @@ const ProductForm = memo(function ProductForm({
           <label>
             <span className="block text-[10px] font-black uppercase tracking-[0.16em] text-slate-400 mb-2">SKU</span>
             <input
-              value={generatedSku}
-              readOnly
-              className="w-full rounded-xl border border-slate-200 bg-slate-100 px-3 py-3 text-sm font-black text-slate-700 outline-none"
+              value={isEditing ? form.sku : generatedSku}
+              readOnly={!isEditing}
+              onChange={(event) => onChange('sku', event.target.value)}
+              className={`w-full rounded-xl border px-3 py-3 text-sm font-black outline-none ${
+                isEditing
+                  ? 'border-slate-200 bg-slate-50 text-slate-800 focus:border-indigo-400 focus:bg-white focus:ring-4 focus:ring-indigo-500/10'
+                  : 'border-slate-200 bg-slate-100 text-slate-700'
+              }`}
               placeholder="SKU dibuat otomatis"
             />
             <p className="mt-1 text-xs font-bold text-slate-400">
-              {isEditing ? 'SKU existing dipertahankan oleh sistem.' : 'SKU baru dibuat otomatis saat produk ditambahkan.'}
+              {isEditing ? 'Isi manual 5 digit atau kosongkan untuk generate otomatis.' : 'SKU baru dibuat otomatis dari kategori.'}
             </p>
             {errors.sku && <p className="mt-1 text-xs font-bold text-rose-600">{errors.sku}</p>}
+          </label>
+
+          <label>
+            <span className="block text-[10px] font-black uppercase tracking-[0.16em] text-slate-400 mb-2">Kategori</span>
+            <select
+              value={form.category_code}
+              onChange={(event) => onChange('category_code', event.target.value)}
+              disabled={isEditing}
+              className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-3 text-sm font-bold text-slate-800 outline-none focus:border-indigo-400 focus:bg-white focus:ring-4 focus:ring-indigo-500/10 disabled:bg-slate-100 disabled:text-slate-500"
+            >
+              {PRODUCT_CATEGORIES.map((category) => (
+                <option key={category.code} value={category.code}>
+                  {category.code} - {category.name}
+                </option>
+              ))}
+            </select>
           </label>
 
           <label>
@@ -485,6 +579,7 @@ const ProductRow = memo(function ProductRow({ isSelected, item, onDelete, onEdit
       <td className="p-3 align-top md:p-4">
         <p className="font-black text-slate-800">{item.name}</p>
         <p className="mt-1 text-[11px] font-bold uppercase tracking-[0.08em] text-slate-400">{item.sku || '-'}</p>
+        <p className="mt-1 text-[11px] font-black text-indigo-500">{item.category_code || '-'} - {item.category_name || 'Tanpa Kategori'}</p>
       </td>
       <td className="p-3 align-top md:p-4">
         <div className="max-w-44 space-y-1 text-[11px] font-bold text-slate-500">
@@ -557,6 +652,7 @@ export default function MasterBarang({
 }) {
   const [saving, setSaving] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
+  const [categoryFilter, setCategoryFilter] = useState('ALL');
   const [sortConfig, setSortConfig] = useState({ field: 'name', direction: 'asc' });
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
@@ -572,23 +668,50 @@ export default function MasterBarang({
   const items = products;
   const loading = productsLoading;
   const generatedSku = useMemo(
-    () => (form.id ? form.sku || '-' : buildNextSku(items)),
-    [form.id, form.sku, items]
+    () => (form.id ? form.sku || buildSkuPreview(items, form.category_code, form.id) : buildSkuPreview(items, form.category_code)),
+    [form.category_code, form.id, form.sku, items]
+  );
+  const importSummary = useMemo(
+    () =>
+      importPreview.reduce(
+        (summary, item) => {
+          if (item.action === 'insert') summary.insert += 1;
+          if (item.action === 'update') summary.update += 1;
+          if (item.action === 'failed') summary.failed += 1;
+          return summary;
+        },
+        { insert: 0, update: 0, failed: 0 }
+      ),
+    [importPreview]
   );
 
   useEffect(() => {
     setPage(1);
-  }, [searchTerm, pageSize, sortConfig]);
+  }, [categoryFilter, searchTerm, pageSize, sortConfig]);
 
   const handleFormChange = useCallback((field, value) => {
-    setForm((current) => ({ ...current, [field]: value }));
-    setErrors((current) => {
-      if (!current[field]) return current;
-      const next = { ...current };
-      delete next[field];
-      return next;
+    setForm((current) => {
+      const normalizedValue = field === 'sku' ? normalizeSku(value) : value;
+      let nextForm;
+
+      if (field === 'category_code') {
+        const categoryCode = normalizeCategoryCode(value);
+        nextForm = { ...current, category_code: categoryCode, category_name: getCategoryName(categoryCode) };
+      } else if (field === 'sku') {
+        if (!normalizedValue) {
+          nextForm = { ...current, sku: '' };
+        } else {
+          const category = getCategoryFromSku(normalizedValue);
+          nextForm = { ...current, sku: normalizedValue, category_code: category.code, category_name: category.name };
+        }
+      } else {
+        nextForm = { ...current, [field]: normalizedValue };
+      }
+
+      setErrors(validateProductForm(nextForm, items));
+      return nextForm;
     });
-  }, []);
+  }, [items]);
 
   const handleSort = useCallback((field) => {
     setSortConfig((current) => ({
@@ -598,9 +721,15 @@ export default function MasterBarang({
   }, []);
 
   const handleEdit = useCallback((item) => {
+    const category = item.category_code
+      ? { code: normalizeCategoryCode(item.category_code), name: item.category_name || getCategoryName(item.category_code) }
+      : getCategoryFromSku(item.sku);
+
     setForm({
       id: item.id,
       sku: item.sku || '',
+      category_code: category.code,
+      category_name: category.name,
       name: item.name || '',
       barcode_slop: item.barcode_slop || '',
       barcode_bal: item.barcode_bal || '',
@@ -658,7 +787,11 @@ export default function MasterBarang({
     async (event) => {
       event.preventDefault();
 
-      const nextErrors = validateProductForm(form, items);
+      const normalizedForm = {
+        ...form,
+        sku: normalizeSku(form.sku) || buildSkuPreview(items, form.category_code, form.id),
+      };
+      const nextErrors = validateProductForm(normalizedForm, items);
       setErrors(nextErrors);
 
       if (Object.keys(nextErrors).length > 0) {
@@ -669,25 +802,39 @@ export default function MasterBarang({
       setSaving(true);
       setMessage({ type: '', text: '' });
 
-      const payload = buildProductPayload(form, items);
-      const request = form.id
-        ? supabase.from('products').update(payload).eq('id', form.id)
-        : supabase.from('products').insert(payload).select(`id,${PRODUCT_FIELDS.join(',')}`).single();
+      const payload = buildProductPayload(normalizedForm);
+      let savedProduct = null;
+      let error = null;
 
-      const { data, error } = await request;
+      if (normalizedForm.id) {
+        try {
+          savedProduct = await updateProductRow(normalizedForm.id, payload);
+        } catch (updateError) {
+          error = updateError;
+        }
+      } else {
+        try {
+          savedProduct = await createProductWithNextSku({
+            payload,
+            fallbackSku: buildSkuPreview(items, payload.category_code),
+          });
+        } catch (createError) {
+          error = createError;
+        }
+      }
 
       if (error) {
         setMessage({ type: 'error', text: `Gagal menyimpan barang: ${error.message}` });
       } else {
         setProducts((current) => {
-          if (form.id) {
-            return current.map((item) => (item.id === form.id ? { ...item, ...payload } : item));
+          if (normalizedForm.id) {
+            return current.map((item) => (isSameProductId(item.id, normalizedForm.id) ? savedProduct : item));
           }
-          return [...current, data].sort((left, right) => normalizeText(left.name).localeCompare(normalizeText(right.name), 'id'));
+          return [...current, savedProduct].sort((left, right) => normalizeText(left.name).localeCompare(normalizeText(right.name), 'id'));
         });
         setMessage({
           type: 'success',
-          text: form.id ? 'Data barang berhasil diperbarui.' : 'Produk baru berhasil ditambahkan.',
+          text: normalizedForm.id ? 'Data barang berhasil diperbarui.' : 'Produk baru berhasil ditambahkan.',
         });
         resetForm();
       }
@@ -724,44 +871,79 @@ export default function MasterBarang({
 
       const text = await file.text();
       const rows = parseCsvProducts(text).map(normalizeImportedProduct);
-      const existingSkus = new Set(items.map((item) => normalizeText(item.sku)));
+      const activeProductsBySku = new Map(
+        items.filter((item) => item.is_active !== false).map((item) => [normalizeText(item.sku), item])
+      );
       const seenSkus = new Set();
-      let nextSkuNumber = items.reduce((max, item) => {
-        const match = String(item?.sku || '').toUpperCase().match(/^BRG-(\d+)$/);
-        if (!match) return max;
-        return Math.max(max, Number.parseInt(match[1], 10) || 0);
-      }, 0);
+      const seenBarcodes = new Map();
+      const existingBarcodesByValue = new Map();
+
+      items.forEach((item) => {
+        ['barcode_slop', 'barcode_bal', 'barcode_karton'].forEach((field) => {
+          const barcodeKey = normalizeText(item[field]);
+          if (barcodeKey) existingBarcodesByValue.set(barcodeKey, item);
+        });
+      });
 
       const preview = rows.map((row, index) => {
-        const resolvedSku = row.sku || `${SKU_PREFIX}-${String(nextSkuNumber + 1).padStart(4, '0')}`;
-        if (!row.sku) nextSkuNumber += 1;
+        const resolvedSku = row.sku;
+        const category = getCategoryFromSku(resolvedSku);
         const skuKey = normalizeText(resolvedSku);
         const duplicateInFile = seenSkus.has(skuKey);
         if (skuKey) seenSkus.add(skuKey);
+        const existingProduct = activeProductsBySku.get(skuKey);
+        const barcodeKey = normalizeText(row.barcode_slop);
+        const duplicateBarcodeRow = barcodeKey ? seenBarcodes.get(barcodeKey) : null;
+        const duplicateBarcodeProduct = barcodeKey ? existingBarcodesByValue.get(barcodeKey) : null;
+        if (barcodeKey && !duplicateBarcodeRow) seenBarcodes.set(barcodeKey, index + 1);
+        const barcodeBelongsToOtherProduct =
+          duplicateBarcodeProduct && normalizeText(duplicateBarcodeProduct.sku) !== skuKey;
 
-        const reason = !row.name
+        const reason = !resolvedSku
+          ? 'SKU kosong'
+          : !/^\d{5}$/.test(resolvedSku)
+            ? 'SKU harus 5 digit'
+            : !row.name
             ? 'Nama kosong'
-            : existingSkus.has(skuKey)
-              ? 'SKU sudah ada'
-              : duplicateInFile
-                ? 'Duplikat di file'
-                : '';
+            : !row.barcode_slop
+              ? 'Barcode kosong'
+            : duplicateInFile
+              ? 'Duplikat di file'
+              : duplicateBarcodeRow
+                ? `Barcode duplikat baris ${duplicateBarcodeRow}`
+              : barcodeBelongsToOtherProduct
+                ? `Barcode dipakai SKU ${duplicateBarcodeProduct.sku}`
+              : '';
+        const action = reason ? 'failed' : existingProduct ? 'update' : 'insert';
 
         return {
           id: `${resolvedSku || 'row'}-${index}`,
           checked: !reason,
           reason,
+          action,
+          existingId: existingProduct?.id || null,
           row: {
             ...row,
             sku: resolvedSku,
+            category_code: category.code,
+            category_name: category.name,
           },
         };
       });
 
       setImportPreview(preview);
+      const nextSummary = preview.reduce(
+        (summary, item) => {
+          if (item.action === 'insert') summary.insert += 1;
+          if (item.action === 'update') summary.update += 1;
+          if (item.action === 'failed') summary.failed += 1;
+          return summary;
+        },
+        { insert: 0, update: 0, failed: 0 }
+      );
       setMessage({
-        type: 'success',
-        text: `${formatNumber(preview.filter((item) => item.checked).length)} item baru siap diimport. Centang hanya item yang ingin ditambah.`,
+        type: nextSummary.failed > 0 ? 'error' : 'success',
+        text: `Preview siap: ${formatNumber(nextSummary.insert)} produk baru, ${formatNumber(nextSummary.update)} produk diupdate, ${formatNumber(nextSummary.failed)} produk gagal.`,
       });
       event.target.value = '';
     },
@@ -775,41 +957,65 @@ export default function MasterBarang({
   }, []);
 
   const handleImportSelected = useCallback(async () => {
-    const selectedRows = importPreview.filter((item) => item.checked && !item.reason).map((item) => item.row);
+    const selectedItems = importPreview.filter((item) => item.checked && !item.reason);
+    const selectedRows = selectedItems.map((item) => ({
+      ...item.row,
+      ...(item.existingId ? { id: item.existingId } : {}),
+    }));
+    const selectedSummary = selectedItems.reduce(
+      (summary, item) => {
+        if (item.action === 'insert') summary.insert += 1;
+        if (item.action === 'update') summary.update += 1;
+        return summary;
+      },
+      { insert: 0, update: 0 }
+    );
 
     if (selectedRows.length === 0) {
-      setMessage({ type: 'error', text: 'Pilih minimal 1 item baru untuk diimport.' });
+      setMessage({ type: 'error', text: 'Pilih minimal 1 item valid untuk diimport.' });
       return;
     }
 
     setImporting(true);
     setMessage({ type: '', text: '' });
 
-    const { data, error } = await supabase
-      .from('products')
-      .insert(selectedRows)
-      .select(`id,${PRODUCT_FIELDS.join(',')}`);
+    try {
+      const importedProducts = await importProductRowsBySku(selectedRows);
+      setProducts((current) => {
+        const nextById = new Map(current.map((item) => [item.id, item]));
+        importedProducts.forEach((item) => {
+          nextById.set(item.id, item);
+        });
 
-    if (error) {
-      setMessage({ type: 'error', text: `Import gagal: ${error.message}` });
-    } else {
-      setProducts((current) =>
-        [...current, ...(data || [])].sort((left, right) => normalizeText(left.name).localeCompare(normalizeText(right.name), 'id'))
-      );
+        return [...nextById.values()].sort((left, right) =>
+          normalizeText(left.name).localeCompare(normalizeText(right.name), 'id')
+        );
+      });
       setImportPreview([]);
-      setMessage({ type: 'success', text: `${formatNumber(data?.length || 0)} item berhasil diimport.` });
+      setMessage({
+        type: 'success',
+        text: `Import berhasil: ${formatNumber(selectedSummary.insert)} produk baru, ${formatNumber(selectedSummary.update)} produk diupdate, ${formatNumber(importSummary.failed)} produk gagal.`,
+      });
+    } catch (error) {
+      setMessage({ type: 'error', text: `Import gagal: ${error.message}` });
     }
 
     setImporting(false);
-  }, [importPreview, setProducts]);
+  }, [importPreview, importSummary.failed, setProducts]);
 
   const visibleItems = useMemo(() => {
     const keyword = normalizeText(deferredSearchTerm);
+    const categoryFiltered =
+      categoryFilter === 'ALL'
+        ? items
+        : items.filter((item) => normalizeCategoryCode(item.category_code || getCategoryFromSku(item.sku).code) === categoryFilter);
     const filtered = keyword
-      ? items.filter((item) => {
+      ? categoryFiltered.filter((item) => {
           const haystack = [
             item.name,
             item.sku,
+            item.category_code,
+            item.category_name,
             item.barcode_slop,
             item.barcode_bal,
             item.barcode_karton,
@@ -819,7 +1025,7 @@ export default function MasterBarang({
 
           return haystack.includes(keyword);
         })
-      : items;
+      : categoryFiltered;
 
     return [...filtered].sort((left, right) => {
       const direction = sortConfig.direction === 'asc' ? 1 : -1;
@@ -830,7 +1036,7 @@ export default function MasterBarang({
 
       return normalizeText(left.name).localeCompare(normalizeText(right.name), 'id') * direction;
     });
-  }, [deferredSearchTerm, items, sortConfig]);
+  }, [categoryFilter, deferredSearchTerm, items, sortConfig]);
 
   const totalPages = Math.max(1, Math.ceil(visibleItems.length / pageSize));
   const safePage = Math.min(page, totalPages);
@@ -931,9 +1137,9 @@ export default function MasterBarang({
             <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
               <div>
                 <p className="text-[10px] font-black uppercase tracking-[0.2em] text-indigo-500">Preview Import</p>
-                <h3 className="mt-2 text-xl font-black text-slate-900">Pilih Item Yang Mau Ditambah</h3>
+                <h3 className="mt-2 text-xl font-black text-slate-900">Replace Master Barang Dari CSV</h3>
                 <p className="mt-1 text-sm font-bold text-slate-500">
-                  Item dengan SKU yang sudah ada otomatis dikunci agar tidak menimpa data lama.
+                  SKU yang sudah ada akan update produk lama dengan product_id tetap sama. SKU baru akan ditambah.
                 </p>
               </div>
               <div className="flex flex-wrap gap-2">
@@ -950,9 +1156,22 @@ export default function MasterBarang({
                   disabled={importing}
                   className="rounded-xl bg-indigo-600 px-4 py-3 text-xs font-black uppercase tracking-[0.16em] text-white shadow-lg shadow-indigo-100 hover:bg-indigo-700 disabled:opacity-60"
                 >
-                  {importing ? 'Mengimport...' : 'Import Terpilih'}
+                  {importing ? 'Mengimport...' : 'Import Valid'}
                 </button>
               </div>
+            </div>
+
+            <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-3">
+              {[
+                { label: 'Produk Baru', value: importSummary.insert, tone: 'text-emerald-700' },
+                { label: 'Produk Diupdate', value: importSummary.update, tone: 'text-indigo-700' },
+                { label: 'Produk Gagal', value: importSummary.failed, tone: 'text-rose-700' },
+              ].map((item) => (
+                <div key={item.label} className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+                  <p className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">{item.label}</p>
+                  <p className={`mt-1 text-2xl font-black ${item.tone}`}>{formatNumber(item.value)}</p>
+                </div>
+              ))}
             </div>
 
             <div className="mt-4 max-h-72 overflow-y-auto rounded-2xl border border-slate-200">
@@ -961,6 +1180,7 @@ export default function MasterBarang({
                   <tr>
                     <th className="w-12 p-3"></th>
                     <th className="p-3 text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">SKU</th>
+                    <th className="p-3 text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">Kategori</th>
                     <th className="p-3 text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">Nama</th>
                     <th className="p-3 text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">Barcode</th>
                     <th className="p-3 text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">Status</th>
@@ -979,13 +1199,22 @@ export default function MasterBarang({
                         />
                       </td>
                       <td className="p-3 text-sm font-black text-slate-800">{item.row.sku || '-'}</td>
+                      <td className="p-3 text-xs font-black text-indigo-500">{item.row.category_code} - {item.row.category_name}</td>
                       <td className="p-3 text-sm font-bold text-slate-700">{item.row.name || '-'}</td>
                       <td className="p-3 text-xs font-bold text-slate-500">
                         S: {item.row.barcode_slop || '-'} / B: {item.row.barcode_bal || '-'} / K: {item.row.barcode_karton || '-'}
                       </td>
                       <td className="p-3">
-                        <span className={`rounded-full px-3 py-1 text-[10px] font-black uppercase tracking-[0.12em] ${item.reason ? 'bg-slate-100 text-slate-500' : 'bg-emerald-50 text-emerald-700'}`}>
-                          {item.reason || 'Siap Import'}
+                        <span
+                          className={`rounded-full px-3 py-1 text-[10px] font-black uppercase tracking-[0.12em] ${
+                            item.action === 'failed'
+                              ? 'bg-rose-50 text-rose-700'
+                              : item.action === 'update'
+                                ? 'bg-indigo-50 text-indigo-700'
+                                : 'bg-emerald-50 text-emerald-700'
+                          }`}
+                        >
+                          {item.reason || (item.action === 'update' ? 'Update' : 'Baru')}
                         </span>
                       </td>
                     </tr>
@@ -1011,7 +1240,18 @@ export default function MasterBarang({
                   />
                 </div>
 
-                <div className="flex items-center gap-2">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                  <select
+                    value={categoryFilter}
+                    onChange={(event) => setCategoryFilter(event.target.value)}
+                    className="rounded-xl border border-slate-200 bg-white px-3 py-3 text-sm font-black text-slate-600 outline-none focus:border-indigo-400"
+                  >
+                    {CATEGORY_OPTIONS.map((category) => (
+                      <option key={category.code} value={category.code}>
+                        {category.code === 'ALL' ? category.name : `${category.code} - ${category.name}`}
+                      </option>
+                    ))}
+                  </select>
                   <select
                     value={pageSize}
                     onChange={(event) => setPageSize(Number(event.target.value))}

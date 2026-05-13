@@ -7,24 +7,12 @@ import MutasiGudang from './pages/MutasiGudang';
 import MasterBarang from './pages/MasterBarang';
 import StokOpname from './pages/StokOpname';
 import LaporanStok from './pages/LaporanStok';
+import { enrichProductCategory } from './utils/productCategories';
+import { fetchProductsForApp } from './utils/productQueries';
 
 const SESSION_STORAGE_KEY = 'toko-bebeng-session';
 const PRODUCTS_CACHE_KEY = 'toko-bebeng-products-cache';
 const PASSWORD_HASH_PREFIX = 'sha256:';
-const PRODUCT_COLUMNS = [
-  'id',
-  'sku',
-  'name',
-  'barcode_slop',
-  'barcode_bal',
-  'barcode_karton',
-  'current_stock_slop',
-  'min_stock_slop',
-  'isi_slop_per_bal',
-  'isi_slop_per_karton',
-  'is_active',
-].join(',');
-
 const ROLE_OPTIONS = [
   { value: 'ADMIN', label: 'Admin' },
   { value: 'KASIR', label: 'Kasir' },
@@ -69,7 +57,7 @@ const readCachedProducts = () => {
   try {
     const rawCache = localStorage.getItem(PRODUCTS_CACHE_KEY);
     const parsedCache = rawCache ? JSON.parse(rawCache) : [];
-    return Array.isArray(parsedCache) ? parsedCache : [];
+    return Array.isArray(parsedCache) ? parsedCache.map(enrichProductCategory) : [];
   } catch {
     return [];
   }
@@ -574,13 +562,8 @@ export default function App() {
 
     setProductsLoading(true);
 
-    const request = supabase
-      .from('products')
-      .select(PRODUCT_COLUMNS)
-      .order('name', { ascending: true })
-      .then(({ data, error }) => {
-        if (error) throw error;
-        const nextProducts = data || [];
+    const request = fetchProductsForApp()
+      .then((nextProducts) => {
         localStorage.setItem(PRODUCTS_CACHE_KEY, JSON.stringify(nextProducts));
         setProducts(nextProducts);
         setProductsReady(true);

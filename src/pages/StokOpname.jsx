@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, CheckCircle2, ClipboardList, RefreshCcw, Search } from 'lucide-react';
 import { supabase } from '../config/supabase';
 import { addOpnameLog, addTransactionLog, getOpnameLogs } from '../utils/inventoryHistory';
+import { buildCategoryOptions, getCategoryFromSku, normalizeCategoryCode } from '../utils/productCategories';
 
 const emptyQty = {
   slop: '',
@@ -10,6 +11,7 @@ const emptyQty = {
 };
 
 const formatNumber = (value) => new Intl.NumberFormat('id-ID').format(Number(value || 0));
+const CATEGORY_OPTIONS = buildCategoryOptions();
 const formatDateTime = (value) =>
   new Intl.DateTimeFormat('id-ID', {
     dateStyle: 'medium',
@@ -69,6 +71,7 @@ export default function StokOpname({
   user,
 }) {
   const [searchTerm, setSearchTerm] = useState('');
+  const [categoryFilter, setCategoryFilter] = useState('ALL');
   const [selectedProduct, setSelectedProduct] = useState(null);
   const [physicalQty, setPhysicalQty] = useState(emptyQty);
   const [note, setNote] = useState('');
@@ -127,8 +130,13 @@ export default function StokOpname({
   }, [todayLogs]);
 
   const activeProducts = useMemo(
-    () => (products || []).filter((item) => item.is_active),
-    [products]
+    () =>
+      (products || []).filter((item) => {
+        if (!item.is_active) return false;
+        if (categoryFilter === 'ALL') return true;
+        return normalizeCategoryCode(item.category_code || getCategoryFromSku(item.sku).code) === categoryFilter;
+      }),
+    [categoryFilter, products]
   );
 
   const filteredProducts = useMemo(() => {
@@ -137,7 +145,9 @@ export default function StokOpname({
       ? activeProducts.filter(
           (item) =>
             item.name?.toLowerCase().includes(keyword) ||
-            item.sku?.toLowerCase().includes(keyword)
+            item.sku?.toLowerCase().includes(keyword) ||
+            item.category_name?.toLowerCase().includes(keyword) ||
+            item.category_code?.toLowerCase().includes(keyword)
         )
       : activeProducts;
 
@@ -376,6 +386,21 @@ export default function StokOpname({
         <section className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(18rem,0.78fr)_minmax(0,1.22fr)]">
           <div className="rounded-xl border border-slate-200 bg-white shadow-sm">
             <div className="border-b border-slate-100 p-4">
+              <div className="space-y-2">
+              <select
+                value={categoryFilter}
+                onChange={(event) => {
+                  setCategoryFilter(event.target.value);
+                  setSelectedProduct(null);
+                }}
+                className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-3 text-sm font-black text-slate-700 outline-none focus:border-indigo-400 focus:ring-4 focus:ring-indigo-500/10"
+              >
+                {CATEGORY_OPTIONS.map((category) => (
+                  <option key={category.code} value={category.code}>
+                    {category.code === 'ALL' ? category.name : `${category.code} - ${category.name}`}
+                  </option>
+                ))}
+              </select>
               <div className="relative">
                 <Search className="absolute left-3 top-3.5 text-slate-400" size={18} />
                 <input
@@ -385,6 +410,7 @@ export default function StokOpname({
                   placeholder="Cari barang atau SKU"
                   className="w-full rounded-lg border border-slate-200 bg-slate-50 py-3 pl-10 pr-3 text-sm font-bold outline-none focus:border-indigo-400 focus:ring-4 focus:ring-indigo-500/10"
                 />
+              </div>
               </div>
             </div>
 
@@ -409,6 +435,9 @@ export default function StokOpname({
                         <div className="min-w-0">
                           <p className="truncate font-black text-slate-800">{item.name}</p>
                           <p className="mt-1 truncate text-[11px] font-bold uppercase text-slate-400">{item.sku || '-'}</p>
+                          <p className="mt-1 truncate text-[11px] font-black text-indigo-500">
+                            {(item.category_code || getCategoryFromSku(item.sku).code)} - {item.category_name || getCategoryFromSku(item.sku).name}
+                          </p>
                         </div>
                         <span
                           className={`shrink-0 rounded-md px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.08em] ${
@@ -438,6 +467,9 @@ export default function StokOpname({
                     <p className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">Barang Terpilih</p>
                     <h4 className="mt-1 break-words text-xl font-black text-slate-900 sm:text-2xl">{selectedProduct.name}</h4>
                     <p className="mt-1 text-xs font-bold uppercase text-indigo-500">{selectedProduct.sku || '-'}</p>
+                    <p className="mt-1 text-xs font-black text-indigo-500">
+                      {(selectedProduct.category_code || getCategoryFromSku(selectedProduct.sku).code)} - {selectedProduct.category_name || getCategoryFromSku(selectedProduct.sku).name}
+                    </p>
                   </div>
                   <span
                     className={`inline-flex w-fit items-center gap-2 rounded-lg px-3 py-2 text-[11px] font-black uppercase tracking-[0.08em] ${

@@ -2,6 +2,8 @@ import React, { Suspense, lazy, useState, useRef, useEffect, useLayoutEffect } f
 import { flushSync } from 'react-dom';
 import { supabase } from '../config/supabase';
 import { addTransactionLog, getTransactionLogs } from '../utils/inventoryHistory';
+import { buildCategoryOptions, getCategoryFromSku } from '../utils/productCategories';
+import { searchProductsForMutasi } from '../utils/productQueries';
 const MobileBarcodeScanner = lazy(() => import('../components/MobileBarcodeScanner'));
 
 const emptyQty = {
@@ -16,6 +18,7 @@ const scannerFallback = (
     Menyiapkan kamera...
   </div>
 );
+const CATEGORY_OPTIONS = buildCategoryOptions();
 const formatDateTime = (value) =>
   new Intl.DateTimeFormat('id-ID', {
     dateStyle: 'medium',
@@ -31,6 +34,7 @@ export default function MutasiGudang({ user }) {
   const [saving, setSaving] = useState(false);
   const [qty, setQty] = useState(emptyQty);
   const [manualInput, setManualInput] = useState('');
+  const [categoryFilter, setCategoryFilter] = useState('ALL');
   const [note, setNote] = useState('');
   const [recentLogs, setRecentLogs] = useState([]);
   const [message, setMessage] = useState({ type: '', text: '' });
@@ -102,29 +106,23 @@ export default function MutasiGudang({ user }) {
     setMessage({ type: '', text: '' });
 
     const timer = setTimeout(async () => {
-      const { data, error } = await supabase
-        .from('products')
-        .select('*')
-        .eq('is_active', true)
-        .or(`name.ilike.%${term}%,sku.ilike.%${term}%,barcode_slop.eq.${term},barcode_bal.eq.${term},barcode_karton.eq.${term}`)
-        .order('name', { ascending: true })
-        .limit(10);
-
       if (requestId !== searchRequestRef.current) return;
 
-      if (error) {
+      try {
+        const data = await searchProductsForMutasi({ categoryFilter, term });
+        if (requestId !== searchRequestRef.current) return;
+        setSearchResults(data);
+        setHighlightedIndex(0);
+      } catch (error) {
         setSearchResults([]);
         setMessage({ type: 'error', text: error.message });
-      } else {
-        setSearchResults(data || []);
-        setHighlightedIndex(0);
       }
 
       setLoading(false);
     }, 180);
 
     return () => clearTimeout(timer);
-  }, [manualInput, showResults]);
+  }, [categoryFilter, manualInput, showResults]);
 
   const handleSearchKeyDown = (event) => {
     if (!showResults || searchResults.length === 0) return;
@@ -257,6 +255,24 @@ export default function MutasiGudang({ user }) {
           <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-200">
           <h2 className="text-sm font-black uppercase tracking-widest text-indigo-600 mb-4">Pencarian Master Data</h2>
           <div className="flex flex-col gap-3">
+            <select
+              value={categoryFilter}
+              onChange={(event) => {
+                setCategoryFilter(event.target.value);
+                setProduct(null);
+                setSearchResults([]);
+                setHighlightedIndex(0);
+                setShowResults(Boolean(manualInput.trim()));
+              }}
+              className="w-full rounded-xl border-2 border-transparent bg-slate-100 p-4 text-sm font-black uppercase text-slate-700 outline-none transition-all focus:border-indigo-500 focus:bg-white focus:ring-4 focus:ring-indigo-500/20"
+            >
+              {CATEGORY_OPTIONS.map((category) => (
+                <option key={category.code} value={category.code}>
+                  {category.code === 'ALL' ? category.name : `${category.code} - ${category.name}`}
+                </option>
+              ))}
+            </select>
+
             <div className="relative">
               <input 
                 ref={inputRef}
@@ -299,6 +315,9 @@ export default function MutasiGudang({ user }) {
                               {item.name}
                             </p>
                             <p className="text-[10px] text-slate-500 font-bold uppercase mt-1">SKU: {item.sku || '-'}</p>
+                            <p className="text-[10px] text-indigo-500 font-black mt-1">
+                              {(item.category_code || getCategoryFromSku(item.sku).code)} - {item.category_name || getCategoryFromSku(item.sku).name}
+                            </p>
                           </div>
                           <span className={`px-3 py-2 rounded-lg text-[10px] font-black uppercase tracking-wider ${
                             highlightedIndex === index
@@ -350,6 +369,9 @@ export default function MutasiGudang({ user }) {
                   <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Identitas Barang</h3>
                   <p className="text-2xl font-black text-slate-800">{product.name}</p>
                   <p className="text-xs font-bold text-indigo-400 mt-1 uppercase">SKU: {product.sku || '-'}</p>
+                  <p className="text-xs font-black text-indigo-500 mt-1">
+                    {(product.category_code || getCategoryFromSku(product.sku).code)} - {product.category_name || getCategoryFromSku(product.sku).name}
+                  </p>
                 </div>
                 <div className="text-right bg-slate-50 p-4 rounded-2xl border border-slate-100 min-w-[120px]">
                   <p className="text-[10px] font-bold text-slate-400 uppercase">Stok (Slop)</p>
