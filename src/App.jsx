@@ -10,9 +10,7 @@ import LaporanStok from './pages/LaporanStok';
 import { enrichProductCategory } from './utils/productCategories';
 import { fetchProductsForApp } from './utils/productQueries';
 
-const SESSION_STORAGE_KEY = 'toko-bebeng-session';
 const PRODUCTS_CACHE_KEY = 'toko-bebeng-products-cache';
-const PASSWORD_HASH_PREFIX = 'sha256:';
 const ROLE_OPTIONS = [
   { value: 'ADMIN', label: 'Admin' },
   { value: 'KASIR', label: 'Kasir' },
@@ -32,7 +30,9 @@ const sanitizeUserSession = (userData) => {
 
   return {
     id: userData.id,
-    username: userData.username ?? '',
+    authId: userData.authId ?? userData.user_id ?? userData.id,
+    email: userData.email ?? userData.username ?? '',
+    username: userData.username ?? userData.email ?? '',
     role: normalizeRole(userData.role),
   };
 };
@@ -42,16 +42,59 @@ const hasAccess = (userRole, allowedRoles = []) => {
   return allowedRoles.includes(normalizeRole(userRole));
 };
 
-const hashPassword = async (plainPassword) => {
-  const encoder = new TextEncoder();
-  const data = encoder.encode(plainPassword);
-  const digest = await window.crypto.subtle.digest('SHA-256', data);
-  const hashArray = Array.from(new Uint8Array(digest));
-  const hashHex = hashArray.map((byte) => byte.toString(16).padStart(2, '0')).join('');
-  return `${PASSWORD_HASH_PREFIX}${hashHex}`;
+const getAuthUserRole = (authUser) => normalizeRole(authUser?.user_metadata?.role);
+
+const withTimeout = (promise, timeoutMs, message) =>
+  Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      window.setTimeout(() => reject(new Error(message)), timeoutMs);
+    }),
+  ]);
+
+const fetchUserProfile = async (authUser) => {
+  if (!authUser) return null;
+
+  const email = authUser.email ?? '';
+  const queries = [
+    supabase.from('app_users').select('id, username, role').eq('id', authUser.id).maybeSingle(),
+    supabase.from('app_users').select('id, username, role').eq('username', email).maybeSingle(),
+  ];
+
+  for (const query of queries) {
+    const { data, error } = await query;
+    if (data) return data;
+    if (error && error.code !== 'PGRST116' && error.code !== '42703' && error.code !== '22P02') {
+      throw error;
+    }
+  }
+
+  return null;
 };
 
-const isPasswordHash = (value) => typeof value === 'string' && value.startsWith(PASSWORD_HASH_PREFIX);
+const buildUserFromAuthSession = async (session) => {
+  const authUser = session?.user;
+  if (!authUser) return null;
+
+  let profile = null;
+  try {
+    profile = await withTimeout(
+      fetchUserProfile(authUser),
+      5000,
+      'Timeout membaca profil user'
+    );
+  } catch (profileError) {
+    console.error('Gagal membaca profil user:', profileError);
+  }
+
+  return sanitizeUserSession({
+    id: profile?.id ?? authUser.id,
+    authId: authUser.id,
+    email: authUser.email,
+    username: profile?.username ?? authUser.email,
+    role: profile?.role ?? getAuthUserRole(authUser),
+  });
+};
 
 const readCachedProducts = () => {
   try {
@@ -70,7 +113,7 @@ const getMenuFromHash = () => {
 };
 
 const LoginPage = memo(function LoginPage({ onLogin }) {
-  const [username, setUsername] = useState('');
+  const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -80,36 +123,26 @@ const LoginPage = memo(function LoginPage({ onLogin }) {
     setError('');
     setIsSubmitting(true);
 
-    const { data, error: dbError } = await supabase
-      .from('app_users')
-      .select('*')
-      .eq('username', username.trim())
-      .single();
+    const { data, error: authError } = await supabase.auth.signInWithPassword({
+      email: email.trim(),
+      password,
+    });
 
-    if (dbError || !data) {
-      setError(`Gagal: ${dbError ? dbError.message : 'User tidak ditemukan'}`);
+    if (authError || !data.session) {
+      setError(`Gagal login: ${authError ? authError.message : 'Session tidak ditemukan'}`);
       setIsSubmitting(false);
       return;
     }
 
-    const hashedPassword = await hashPassword(password);
-    const storedPassword = data.password_hash ?? '';
-    const passwordMatches = storedPassword === hashedPassword || storedPassword === password;
-
-    if (!passwordMatches) {
-      setError('Password salah!');
+    try {
+      onLogin(await buildUserFromAuthSession(data.session));
+    } catch (profileError) {
+      await supabase.auth.signOut();
+      setError(`Gagal membaca profil user: ${profileError.message}`);
       setIsSubmitting(false);
       return;
     }
 
-    if (!isPasswordHash(storedPassword)) {
-      await supabase
-        .from('app_users')
-        .update({ password_hash: hashedPassword })
-        .eq('id', data.id);
-    }
-
-    onLogin(sanitizeUserSession(data));
     setIsSubmitting(false);
   };
 
@@ -127,14 +160,18 @@ const LoginPage = memo(function LoginPage({ onLogin }) {
         <form onSubmit={handleLogin} className="space-y-5 text-left">
           <input
             required
-            placeholder="Username"
+            type="email"
+            inputMode="email"
+            autoComplete="email"
+            placeholder="Email"
             className="w-full p-4 bg-slate-50 rounded-xl border-2 border-transparent focus:bg-white focus:border-indigo-500 font-bold outline-none text-sm"
-            value={username}
-            onChange={(e) => setUsername(e.target.value)}
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
           />
           <input
             required
             type="password"
+            autoComplete="current-password"
             placeholder="Password"
             className="w-full p-4 bg-slate-50 rounded-xl border-2 border-transparent focus:bg-white focus:border-indigo-500 font-bold outline-none text-sm"
             value={password}
@@ -217,11 +254,10 @@ const UserManagementPage = ({ currentUser }) => {
   const [pendingUserId, setPendingUserId] = useState(null);
   const [message, setMessage] = useState({ type: '', text: '' });
   const [form, setForm] = useState({
-    username: '',
+    email: '',
     password: '',
     role: 'KASIR',
   });
-  const [passwordDrafts, setPasswordDrafts] = useState({});
 
   const fetchUsers = async () => {
     setLoading(true);
@@ -250,19 +286,46 @@ const UserManagementPage = ({ currentUser }) => {
     setSaving(true);
     setMessage({ type: '', text: '' });
 
-    const payload = {
-      username: form.username.trim(),
-      password_hash: await hashPassword(form.password),
-      role: normalizeRole(form.role),
-    };
+    const activeSession = await supabase.auth.getSession();
+    const email = form.email.trim();
+    const role = normalizeRole(form.role);
 
-    const { error } = await supabase.from('app_users').insert(payload);
+    const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
+      email,
+      password: form.password,
+      options: {
+        data: { role },
+      },
+    });
+
+    if (signUpError) {
+      setMessage({ type: 'error', text: `Gagal membuat akun auth: ${signUpError.message}` });
+      setSaving(false);
+      return;
+    }
+
+    if (activeSession.data.session && signUpData.session) {
+      await supabase.auth.setSession({
+        access_token: activeSession.data.session.access_token,
+        refresh_token: activeSession.data.session.refresh_token,
+      });
+    }
+
+    const { data: existingProfile } = await supabase
+      .from('app_users')
+      .select('id')
+      .eq('username', email)
+      .maybeSingle();
+
+    const { error } = existingProfile
+      ? await supabase.from('app_users').update({ role }).eq('id', existingProfile.id)
+      : await supabase.from('app_users').insert({ username: email, role });
 
     if (error) {
-      setMessage({ type: 'error', text: `Gagal menambah user: ${error.message}` });
+      setMessage({ type: 'error', text: `Akun auth dibuat, tapi profil gagal disimpan: ${error.message}` });
     } else {
       setMessage({ type: 'success', text: 'User baru berhasil ditambahkan.' });
-      setForm({ username: '', password: '', role: 'KASIR' });
+      setForm({ email: '', password: '', role: 'KASIR' });
       await fetchUsers();
     }
 
@@ -295,26 +358,16 @@ const UserManagementPage = ({ currentUser }) => {
     setPendingUserId(null);
   };
 
-  const handlePasswordUpdate = async (userId) => {
-    const nextPassword = passwordDrafts[userId]?.trim();
-    if (!nextPassword) {
-      setMessage({ type: 'error', text: 'Password baru tidak boleh kosong.' });
-      return;
-    }
-
+  const handlePasswordReset = async (userId, email) => {
     setPendingUserId(userId);
     setMessage({ type: '', text: '' });
 
-    const { error } = await supabase
-      .from('app_users')
-      .update({ password_hash: await hashPassword(nextPassword) })
-      .eq('id', userId);
+    const { error } = await supabase.auth.resetPasswordForEmail(email);
 
     if (error) {
-      setMessage({ type: 'error', text: `Gagal mengubah password: ${error.message}` });
+      setMessage({ type: 'error', text: `Gagal mengirim reset password: ${error.message}` });
     } else {
-      setPasswordDrafts((current) => ({ ...current, [userId]: '' }));
-      setMessage({ type: 'success', text: 'Password user berhasil diperbarui.' });
+      setMessage({ type: 'success', text: 'Link reset password berhasil dikirim.' });
     }
 
     setPendingUserId(null);
@@ -358,13 +411,16 @@ const UserManagementPage = ({ currentUser }) => {
 
           <form onSubmit={handleCreateUser} className="space-y-4">
             <div>
-              <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Username</label>
+              <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Email</label>
               <input
                 required
-                value={form.username}
-                onChange={(e) => setForm((current) => ({ ...current, username: e.target.value }))}
+                type="email"
+                inputMode="email"
+                autoComplete="email"
+                value={form.email}
+                onChange={(e) => setForm((current) => ({ ...current, email: e.target.value }))}
                 className="w-full p-4 bg-slate-50 rounded-xl border-2 border-transparent focus:bg-white focus:border-indigo-500 font-bold outline-none text-sm"
-                placeholder="Masukkan username"
+                placeholder="Masukkan email"
               />
             </div>
 
@@ -373,6 +429,7 @@ const UserManagementPage = ({ currentUser }) => {
               <input
                 required
                 type="password"
+                autoComplete="new-password"
                 value={form.password}
                 onChange={(e) => setForm((current) => ({ ...current, password: e.target.value }))}
                 className="w-full p-4 bg-slate-50 rounded-xl border-2 border-transparent focus:bg-white focus:border-indigo-500 font-bold outline-none text-sm"
@@ -435,7 +492,7 @@ const UserManagementPage = ({ currentUser }) => {
             <table className="w-full text-left border-collapse">
               <thead>
                 <tr className="bg-slate-50 border-b border-slate-100">
-                  <th className="p-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Username</th>
+                  <th className="p-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Email</th>
                   <th className="p-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Role</th>
                   <th className="p-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Password</th>
                   <th className="p-4 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right">Aksi</th>
@@ -476,19 +533,12 @@ const UserManagementPage = ({ currentUser }) => {
                       </td>
                       <td className="p-4">
                         <div className="flex flex-col md:flex-row gap-2">
-                          <input
-                            type="password"
-                            value={passwordDrafts[item.id] ?? ''}
-                            onChange={(e) => setPasswordDrafts((current) => ({ ...current, [item.id]: e.target.value }))}
-                            className="w-full p-3 bg-slate-50 rounded-xl border border-slate-200 font-bold text-sm outline-none focus:border-indigo-500"
-                            placeholder="Password baru"
-                          />
                           <button
-                            onClick={() => handlePasswordUpdate(item.id)}
+                            onClick={() => handlePasswordReset(item.id, item.username)}
                             disabled={pendingUserId === item.id}
                             className="px-4 py-3 rounded-xl bg-amber-500 text-white font-black text-[10px] uppercase tracking-widest hover:bg-amber-600 disabled:opacity-60"
                           >
-                            Simpan
+                            Reset
                           </button>
                         </div>
                       </td>
@@ -496,7 +546,7 @@ const UserManagementPage = ({ currentUser }) => {
                         <div className="flex justify-end">
                           <button
                             onClick={() => handleDeleteUser(item.id, item.username)}
-                            disabled={pendingUserId === item.id || currentUser?.id === item.id}
+                            disabled={pendingUserId === item.id || currentUser?.username === item.username}
                             className="px-4 py-3 rounded-xl bg-rose-500 text-white font-black text-[10px] uppercase tracking-widest hover:bg-rose-600 disabled:opacity-50"
                           >
                             Hapus
@@ -516,14 +566,10 @@ const UserManagementPage = ({ currentUser }) => {
 };
 
 export default function App() {
-  const [user, setUser] = useState(() => {
-    try {
-      const savedSession = localStorage.getItem(SESSION_STORAGE_KEY);
-      return sanitizeUserSession(savedSession ? JSON.parse(savedSession) : null);
-    } catch {
-      return null;
-    }
-  });
+  const [user, setUser] = useState(null);
+  const [authSession, setAuthSession] = useState(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [profileLoading, setProfileLoading] = useState(false);
   const [activeMenu, setActiveMenu] = useState(() => getMenuFromHash());
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [products, setProducts] = useState(() => readCachedProducts());
@@ -585,13 +631,65 @@ export default function App() {
   }, [productsReady]);
 
   useEffect(() => {
-    if (!user) {
-      localStorage.removeItem(SESSION_STORAGE_KEY);
-      return;
-    }
+    let isMounted = true;
 
-    localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(user));
-  }, [user]);
+    const loadAuthSession = async () => {
+      const { data, error } = await supabase.auth.getSession();
+      if (!isMounted) return;
+
+      if (error || !data.session) {
+        setAuthSession(null);
+        setUser(null);
+        setAuthLoading(false);
+        return;
+      }
+
+      setAuthSession(data.session);
+      setAuthLoading(false);
+    };
+
+    loadAuthSession();
+
+    const { data: authListener } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (!isMounted) return;
+
+      setAuthSession(session);
+      setAuthLoading(false);
+
+      if (!session) {
+        setUser(null);
+      }
+    });
+
+    return () => {
+      isMounted = false;
+      authListener.subscription.unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    const loadUserProfile = async () => {
+      if (!authSession) {
+        setProfileLoading(false);
+        return;
+      }
+
+      setProfileLoading(true);
+      const nextUser = await buildUserFromAuthSession(authSession);
+
+      if (!isMounted) return;
+      setUser(nextUser);
+      setProfileLoading(false);
+    };
+
+    loadUserProfile();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [authSession?.access_token, authSession?.user?.id]);
 
   useEffect(() => {
     if (!user) {
@@ -662,8 +760,10 @@ export default function App() {
     window.history.pushState(null, '', `#${activeMenu}`);
   }, [accessibleMenuIds, activeMenu, user]);
 
-  const handleLogout = () => {
-    localStorage.removeItem(SESSION_STORAGE_KEY);
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
+    setAuthSession(null);
+    setProfileLoading(false);
     setIsMobileMenuOpen(false);
     setActiveMenu('dashboard');
     setProducts([]);
@@ -683,6 +783,16 @@ export default function App() {
   const refreshProducts = useCallback(() => fetchProducts({ force: true }), [fetchProducts]);
 
   const activeLabel = accessibleMenus.find((m) => m.id === activeMenu)?.label;
+
+  if (authLoading || profileLoading || (authSession && !user)) {
+    return (
+      <div className="flex min-h-[100dvh] items-center justify-center bg-slate-100 p-6 font-sans">
+        <div className="rounded-2xl border border-slate-200 bg-white px-6 py-5 text-center shadow-sm">
+          <p className="text-xs font-black uppercase tracking-widest text-slate-500">Memeriksa session...</p>
+        </div>
+      </div>
+    );
+  }
 
   if (!user) return <LoginPage onLogin={setUser} />;
 
